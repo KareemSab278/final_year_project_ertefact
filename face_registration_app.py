@@ -1,12 +1,34 @@
+import cv2
+import face_recognition
 import tkinter as tk
 from tkinter import messagebox
 from openpyxl import Workbook, load_workbook
 import os
 import datetime
+import numpy as np
 
 EXCEL_FILE = 'attendance.xlsx'
+EMPLOYEE_DATA_FILE = 'employee_data.xlsx'
 
-# Initialize Excel
+# Load registered faces
+def load_registered_faces():
+    known_face_encodings = []
+    known_face_names = []
+
+    wb = load_workbook(EMPLOYEE_DATA_FILE)
+    ws = wb.active
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        first_name, last_name, _, face_encoding = row
+        full_name = f"{first_name} {last_name}"
+        if face_encoding:
+            encoding = np.fromstring(face_encoding[1:-1], dtype=float, sep=',')
+            known_face_encodings.append(encoding)
+            known_face_names.append(full_name)
+
+    return known_face_encodings, known_face_names
+
+# Initialize attendance Excel
 def init_attendance_excel():
     if not os.path.exists(EXCEL_FILE):
         wb = Workbook()
@@ -45,37 +67,74 @@ def update_employee_action(full_name, action_type):
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    if action_type == "Clock In":
-        ws.cell(row=row_index, column=2).value = timestamp
-    elif action_type == "Break Start":
-        ws.cell(row=row_index, column=3).value = timestamp
-    elif action_type == "Break End":
-        ws.cell(row=row_index, column=4).value = timestamp
-    elif action_type == "Shift End":
-        ws.cell(row=row_index, column=5).value = timestamp
+    col_map = {
+        "Clock In": 2,
+        "Break Start": 3,
+        "Break End": 4,
+        "Shift End": 5
+    }
 
-    wb.save(EXCEL_FILE)
-    messagebox.showinfo("Success", f"{action_type} recorded for {full_name}")
+    col = col_map.get(action_type)
+    if col and ws.cell(row=row_index, column=col).value is None:
+        ws.cell(row=row_index, column=col).value = timestamp
+        wb.save(EXCEL_FILE)
+        messagebox.showinfo("Success", f"{action_type} recorded for {full_name}")
+    else:
+        messagebox.showinfo("Already Recorded", f"{action_type} already recorded for {full_name}")
+
+# Open camera and detect face
+def open_camera_for_recognition(action_type):
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        messagebox.showerror("Error", "Cannot access camera")
+        return
+
+    known_encodings, known_names = load_registered_faces()
+    if not known_encodings:
+        messagebox.showerror("Error", "No registered faces found.")
+        return
+
+    found = False
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        face_locations = face_recognition.face_locations(rgb_frame)
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+        for face_encoding in face_encodings:
+            matches = face_recognition.compare_faces(known_encodings, face_encoding)
+            face_distances = face_recognition.face_distance(known_encodings, face_encoding)
+
+            if True in matches:
+                best_index = np.argmin(face_distances)
+                name = known_names[best_index]
+                update_employee_action(name, action_type)
+                found = True
+                break
+
+        cv2.imshow("Face Recognition", frame)
+        if found or cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    if not found:
+        messagebox.showerror("Not Found", "No matching face found.")
 
 # Tkinter UI
-def handle_action(action_type):
-    full_name = name_entry.get()
-    if not full_name:
-        messagebox.showerror("Error", "Please enter employee name")
-        return
-    update_employee_action(full_name, action_type)
-
 app = tk.Tk()
-app.title("Basic Clock In System")
+app.title("Face Recognition Attendance (Unoptimized)")
 
-tk.Label(app, text="Employee Full Name:").pack(pady=5)
-name_entry = tk.Entry(app)
-name_entry.pack(pady=5)
-
-tk.Button(app, text="Clock In", command=lambda: handle_action("Clock In")).pack(pady=5)
-tk.Button(app, text="Break Start", command=lambda: handle_action("Break Start")).pack(pady=5)
-tk.Button(app, text="Break End", command=lambda: handle_action("Break End")).pack(pady=5)
-tk.Button(app, text="Shift End", command=lambda: handle_action("Shift End")).pack(pady=5)
+tk.Button(app, text="Clock In", command=lambda: open_camera_for_recognition("Clock In")).pack(pady=5)
+tk.Button(app, text="Break Start", command=lambda: open_camera_for_recognition("Break Start")).pack(pady=5)
+tk.Button(app, text="Break End", command=lambda: open_camera_for_recognition("Break End")).pack(pady=5)
+tk.Button(app, text="Shift End", command=lambda: open_camera_for_recognition("Shift End")).pack(pady=5)
 
 init_attendance_excel()
 app.mainloop()
